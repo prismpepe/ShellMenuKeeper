@@ -28,6 +28,7 @@ def env(tmp_path):
         roots=[Root("HKCU", HKCU, classes)],
         blocked=[Root("HKCU", HKCU, join(base, "Blocked"))],
         backup_dir=tmp_path / "backups",
+        repo=Root("HKCU", HKCU, join(base, "Repo")),
     )
     yield e
     _wipe(base)
@@ -41,3 +42,14 @@ def put(env: Env, rel: str, value: str = "", **named) -> None:
             winreg.SetValueEx(k, "", 0, winreg.REG_SZ, value)
         for n, v in named.items():
             winreg.SetValueEx(k, n, 0, winreg.REG_SZ, v)
+
+
+def put_package(env: Env, full: str, folder, manifest_xml: str, dll_rel: str = "") -> None:
+    """インストール済みパッケージ（一覧とマニフェスト）と COM 登録を作る。"""
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "AppxManifest.xml").write_text(manifest_xml, encoding="utf-8")
+    with winreg.CreateKey(env.repo.hive, join(env.repo.base, full)) as k:
+        winreg.SetValueEx(k, "PackageRootFolder", 0, winreg.REG_SZ, str(folder))
+    if dll_rel:
+        guid = "{AAAAAAAA-0000-0000-0000-000000000001}"
+        put(env, rf"PackagedCom\Package\{full}\Class\{guid}", DllPath=dll_rel)

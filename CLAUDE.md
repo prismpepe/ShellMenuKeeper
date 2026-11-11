@@ -3,7 +3,7 @@
 **応答・コメント・コミットメッセージはすべて日本語。** 識別子は英語でよい。
 
 Windows 11 のエクスプローラの右クリックメニューの登録を保守する汎用ツール
-（リンク切れの検出、無効化、削除、控えからの復元）。`voice2text` とは無関係。
+（リンク切れの検出、無効化、削除、控えからの復元）。
 使い方は `README.md`。
 
 ## 構成
@@ -36,8 +36,16 @@ Windows 11 のエクスプローラの右クリックメニューの登録を保
    新しい形を見つけたら、実機の空欄を洗い出してから判定を足す。
 6. **常駐中の画面は古い判定のまま。** 判定を直したら起動し直してから確認する。
 
+7. **誤検出の確認は、実機の全件でやる。** ProgID を足したとき、実機で誤検出が出た
+   （2026-11-11）。いずれも「呼び先が実在しない」ではなかった。
+   - `"%1"` 型（exefile など）: コマンドの先頭がファイル自身。
+   - `perfmon` 型: 拡張子を省いた書き方。Windows が `.exe` を補う。
+   - 名前だけの指定（`UnifiedPluginInstallerAgent.exe`）: App Paths に登録された場所で解決される。
+8. **Windows 11 の新メニュー（MSIX）はレジストリではなくマニフェストが持つ。**
+   `Repository\Packages` の PackageRootFolder → `AppxManifest.xml` の
+   `windows.fileExplorerContextMenus`（Verb の Id と Clsid）。旧版の `PackagedCom` の
+   残骸はメニューに出ない。無効化は `Shell Extensions\Blocked`（CLSID）。削除は不可。
+
 ## 未対応（今後）
 
-- Windows 11 の新メニューの MSIX／IExplorerCommand 登録（現状はクラシック側のみ）
-- ProgID（`Applications\…`、`txtfile` など）配下の `shell`
-- 一覧の列幅（「対象」が広く「呼び先」が切れる）の調整
+- 拡張子が無くても出る ProgID 外の登録（`Applications\…\shell` の「プログラムから開く」）

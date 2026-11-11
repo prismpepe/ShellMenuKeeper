@@ -1,8 +1,11 @@
 r"""右クリックメニューの登録を洗い出し、リンク切れを判定する。
 
-扱う登録は2種類。
+扱う登録は3種類。
 - verb: `...\shell\<名前>\command` で実行ファイルを呼ぶ項目
 - handler: `...\shellex\ContextMenuHandlers\<名前>` が CLSID（COM の DLL）を指す拡張
+- msix: Windows 11 の新しいメニュー。インストール済みパッケージのマニフェストが持つ
+
+場所は、ファイル全般・フォルダ・拡張子ごと・拡張子が指す ProgID（txtfile など）。
 
 リンク切れ = 呼び先の実行ファイル／DLL が存在しない、または CLSID が未登録。
 判定できないものは「リンク切れ」にしない（誤って消させないため）。
@@ -14,6 +17,8 @@ import ctypes
 import os
 import re
 import shutil
+import winreg
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
 from .registry import (
@@ -30,6 +35,8 @@ from .registry import (
 
 GUID_RE = re.compile(r"^\{[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\}$")
 
+DEFAULT_VERBS = {"open", "edit", "print", "play", "opennew", "runas"}
+
 FIXED_SCOPES = [
     "*",
     "AllFileSystemObjects",
@@ -42,8 +49,8 @@ FIXED_SCOPES = [
 
 @dataclass
 class Entry:
-    kind: str            # "verb" | "handler"
-    hive_name: str       # "HKCU" | "HKLM"
+    kind: str            # "verb" | "handler" | "msix"
+    hive_name: str       # "HKCU" | "HKLM" | "パッケージ"
     hive: int
     key_path: str        # hive 直下からの完全なパス
     scope: str           # 例: "*", "Directory", ".txt"
@@ -55,6 +62,7 @@ class Entry:
     broken: bool = False
     detail: str = ""
     system: bool = False  # Windows 標準の場所を指している
+    note: str = ""        # 画面の詳細欄に出す補足（ProgID の拡張子など）
 
     @property
     def state_text(self) -> str:
@@ -82,16 +90,32 @@ def _extra_dirs() -> list[str]:
     return [os.path.join(root, "SysWOW64"), os.path.join(root, "System32")]
 
 
+APP_PATHS = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"
+# コマンドの先頭が %1 など（ファイル自身を実行する形。exefile / batfile など）
+PLACEHOLDER_RE = re.compile(r"^%[0-9*LlVvWw]")
+
+
+def _in_app_paths(name: str) -> bool:
+    """パスなしの名前は、App Paths に登録された場所からも解決される。"""
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        for n in (name, name + ".exe"):
+            target = default_value(hive, join(APP_PATHS, n))
+            if target and os.path.lexists(os.path.expandvars(target.strip('"'))):
+                return True
+    return False
+
+
 def path_exists(p: str) -> bool:
     p = os.path.expandvars(p.strip().strip('"'))
     if not p:
         return False
     if os.path.isabs(p) or "\\" in p or "/" in p:
         # フォルダは呼び先にならない。"C:\Program Files" で切れて実在扱いになるのを防ぐ
-        return os.path.lexists(p) and not os.path.isdir(p)
+        # 拡張子のない指定は、Windows が .exe を補って起動する
+        return any(os.path.lexists(c) and not os.path.isdir(c) for c in (p, p + ".exe"))
     if shutil.which(p):
         return True
-    return any(os.path.lexists(os.path.join(d, p)) for d in _extra_dirs())
+    return any(os.path.lexists(os.path.join(d, p)) for d in _extra_dirs()) or _in_app_paths(p)
 
 
 def extract_executable(cmd: str) -> str:
@@ -175,8 +199,23 @@ def blocked_guids(env: Env) -> set[str]:
     return out
 
 
-def iter_scopes(root: Root) -> list[str]:
-    """メニュー登録がありうる場所（ファイル全般・フォルダ・拡張子ごと）を挙げる。"""
+def progid_map(env: Env) -> dict[str, list[str]]:
+    """ProgID → それを既定にしている拡張子。拡張子の既定値が指す先にもメニューは登録される。"""
+    out: dict[str, list[str]] = {}
+    for root in env.roots:
+        for k in subkeys(root.hive, root.base):
+            if not k.startswith("."):
+                continue
+            prog = default_value(root.hive, join(root.base, k))
+            if prog and not prog.startswith("."):
+                exts = out.setdefault(prog, [])
+                if k not in exts:
+                    exts.append(k)
+    return out
+
+
+def iter_scopes(root: Root, progids: dict[str, list[str]] | None = None) -> list[str]:
+    """メニュー登録がありうる場所（ファイル全般・フォルダ・拡張子ごと・ProgID）を挙げる。"""
     found: list[str] = []
 
     def has_menu(rel: str) -> bool:
@@ -194,6 +233,9 @@ def iter_scopes(root: Root) -> list[str]:
     for k in subkeys(root.hive, join(root.base, sfa)):
         if has_menu(join(sfa, k)):
             found.append(join(sfa, k))
+    for prog in progids or {}:
+        if prog not in found and "\\" not in prog and has_menu(prog):
+            found.append(prog)
     return found
 
 
@@ -306,7 +348,9 @@ def _scan_verbs(env: Env, root: Root, scope: str) -> list[Entry]:
             e.broken, e.target, e.detail, _ = _check_guid(env, handler_guid)
         elif isinstance(cmd, str) and cmd.strip():
             e.target = extract_executable(cmd)
-            if not path_exists(e.target):
+            if PLACEHOLDER_RE.match(e.target):
+                e.target, e.detail = "", "ファイル自身を実行する項目"
+            elif not path_exists(e.target):
                 e.broken, e.detail = True, "実行ファイルが存在しない"
         elif "subcommands" in lower or "extendedsubcommandskey" in lower:
             results: list[tuple[bool, str]] = []   # (リンク切れか, 呼び先)
@@ -366,12 +410,108 @@ def _scan_handlers(env: Env, root: Root, scope: str, blocked: set[str]) -> list[
     return out
 
 
-def scan(env: Env) -> list[Entry]:
-    blocked = blocked_guids(env)
+def installed_packages(env: Env) -> dict[str, str]:
+    """インストール済みパッケージの フル名 → インストール先。"""
+    out: dict[str, str] = {}
+    if not env.repo:
+        return out
+    for name in subkeys(env.repo.hive, env.repo.base):
+        folder = values(env.repo.hive, join(env.repo.base, name)).get("PackageRootFolder")
+        if folder and isinstance(folder[0], str):
+            out[name] = folder[0]
+    return out
+
+
+def _local(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def manifest_verbs(manifest: str) -> list[tuple[str, str, str]]:
+    """マニフェストの windows.fileExplorerContextMenus から (対象の種類, 動詞ID, CLSID) を取る。"""
+    try:
+        tree = ET.parse(manifest)
+    except (OSError, ET.ParseError):
+        return []
+    out: list[tuple[str, str, str]] = []
+    for ext in tree.iter():
+        if _local(ext.tag) != "Extension" or ext.get("Category") != "windows.fileExplorerContextMenus":
+            continue
+        for item in ext.iter():
+            if _local(item.tag) != "ItemType":
+                continue
+            for verb in item:
+                if _local(verb.tag) == "Verb" and verb.get("Clsid"):
+                    out.append((item.get("Type", ""), verb.get("Id", ""), verb.get("Clsid", "")))
+    return out
+
+
+def _short_types(types: list[str], limit: int = 3) -> str:
+    if not types:
+        return "*"
+    return ", ".join(types[:limit]) + (f" ほか{len(types) - limit}種" if len(types) > limit else "")
+
+
+def _scan_msix(env: Env, blocked: set[str]) -> list[Entry]:
+    """Windows 11 の新しいメニュー（インストール済みの MSIX パッケージが持つ項目）。
+
+    インストール済みの一覧に無いパッケージの登録（旧版の残骸）はメニューに出ないので扱わない。
+    """
+    packages = installed_packages(env)
+    seen: set[tuple[str, str, str]] = set()
     out: list[Entry] = []
     for root in env.roots:
-        for scope in iter_scopes(root):
-            out += _scan_verbs(env, root, scope)
-            out += _scan_handlers(env, root, scope, blocked)
+        pc = join(root.base, "PackagedCom", "Package")
+        for full in subkeys(root.hive, pc):
+            folder = packages.get(full)
+            if not folder:
+                continue
+            verbs = manifest_verbs(os.path.join(folder, "AppxManifest.xml"))
+            grouped: dict[tuple[str, str], list[str]] = {}
+            for item_type, verb_id, clsid in verbs:
+                guid = "{" + clsid.strip("{}").upper() + "}"
+                types = grouped.setdefault((verb_id, guid), [])
+                if item_type and item_type not in types:
+                    types.append(item_type)
+            for (verb_id, guid), types in grouped.items():
+                if (full, verb_id, guid) in seen:
+                    continue
+                seen.add((full, verb_id, guid))
+                dll_rel = (values(root.hive, join(pc, full, "Class", guid)).get("DllPath") or ("",))[0]
+                target = os.path.join(folder, dll_rel) if dll_rel else ""
+                e = Entry(
+                    kind="msix",
+                    hive_name="パッケージ",
+                    hive=0,
+                    key_path=full,
+                    scope=_short_types(types),
+                    note="対象: " + (", ".join(types) or "*"),
+                    name=verb_id,
+                    display=f"{full.split('_')[0]}：{verb_id}",
+                    target=target,
+                    guid=guid,
+                    disabled=guid.lower() in blocked,
+                    detail="Windows 11 の新しいメニュー（パッケージアプリ）",
+                )
+                if target and not os.path.lexists(target):
+                    e.broken, e.detail = True, "パッケージ内の DLL が存在しない"
+                out.append(e)
+    return out
+
+
+def scan(env: Env) -> list[Entry]:
+    blocked = blocked_guids(env)
+    progids = progid_map(env)
+    out: list[Entry] = []
+    for root in env.roots:
+        for scope in iter_scopes(root, progids):
+            found = _scan_verbs(env, root, scope) + _scan_handlers(env, root, scope, blocked)
+            if scope in progids:
+                exts = " ".join(progids[scope][:8]) + (" ほか" if len(progids[scope]) > 8 else "")
+                for e in found:
+                    e.note = f"ProgID「{scope}」の項目。対象の拡張子: {exts}"
+                    if e.name.lower() in DEFAULT_VERBS:
+                        e.note += "\n※ ダブルクリックなどの既定の操作かもしれません。消す前に確認してください。"
+            out += found
+    out += _scan_msix(env, blocked)
     out.sort(key=lambda e: (not e.broken, e.scope.lower(), e.display.lower(), e.hive_name))
     return out

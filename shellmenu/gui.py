@@ -6,18 +6,20 @@ import os
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from . import actions
+from . import __version__, actions
 from .registry import Env, default_env
 from .scanner import Entry, scan
 
-KIND_LABEL = {"verb": "メニュー項目", "handler": "拡張ハンドラ"}
+KIND_LABEL = {"verb": "メニュー項目", "handler": "拡張ハンドラ", "msix": "新メニュー(MSIX)"}
+ALL_KINDS = "すべて"
+# 呼び先だけが余りの幅を受け取る（対象や名前が広がって呼び先が切れないように）
 COLUMNS = (
-    ("state", "状態", 120),
-    ("name", "名前", 210),
-    ("scope", "対象", 170),
-    ("kind", "種類", 90),
-    ("hive", "登録先", 60),
-    ("target", "呼び先", 420),
+    ("state", "状態", 110, False),
+    ("name", "名前", 230, False),
+    ("scope", "対象", 130, False),
+    ("kind", "種類", 120, False),
+    ("hive", "登録先", 70, False),
+    ("target", "呼び先", 420, True),
 )
 
 
@@ -31,6 +33,7 @@ class App(ttk.Frame):
         self.sort_rev = False
         self.broken_only = tk.BooleanVar(value=False)
         self.query = tk.StringVar()
+        self.kind_filter = tk.StringVar(value=ALL_KINDS)
         self.status = tk.StringVar()
         self._build()
         self.pack(fill="both", expand=True)
@@ -48,6 +51,13 @@ class App(ttk.Frame):
         entry = ttk.Entry(top, textvariable=self.query, width=28)
         entry.pack(side="left", padx=4)
         self.query.trace_add("write", lambda *_: self.refresh())
+        ttk.Label(top, text="種類:").pack(side="left", padx=(12, 0))
+        kinds = ttk.Combobox(
+            top, textvariable=self.kind_filter, state="readonly", width=16,
+            values=[ALL_KINDS, *KIND_LABEL.values()],
+        )
+        kinds.pack(side="left", padx=4)
+        kinds.bind("<<ComboboxSelected>>", lambda _e: self.refresh())
         self.admin_label = ttk.Label(top)
         self.admin_label.pack(side="right")
         if not actions.is_admin():
@@ -61,18 +71,18 @@ class App(ttk.Frame):
         self.tree = ttk.Treeview(
             mid, columns=[c[0] for c in COLUMNS], show="headings", selectmode="extended"
         )
-        for key, title, width in COLUMNS:
+        for key, title, width, stretch in COLUMNS:
             self.tree.heading(key, text=title, command=lambda k=key: self.sort_by(k))
-            self.tree.column(key, width=width, anchor="w")
+            self.tree.column(key, width=width, minwidth=60, anchor="w", stretch=stretch)
         sb = ttk.Scrollbar(mid, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
-        self.tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
+        self.tree.pack(side="left", fill="both", expand=True)
         self.tree.tag_configure("broken", foreground="#b00020")
         self.tree.tag_configure("disabled", foreground="#808080")
         self.tree.bind("<<TreeviewSelect>>", lambda _e: self.show_detail())
 
-        self.detail = tk.Text(self, height=4, wrap="word", state="disabled", background="#f6f6f6")
+        self.detail = tk.Text(self, height=5, wrap="word", state="disabled", background="#f6f6f6")
         self.detail.pack(fill="x")
 
         bar = ttk.Frame(self)
@@ -98,6 +108,8 @@ class App(ttk.Frame):
         out = []
         for e in self.entries:
             if self.broken_only.get() and not e.broken:
+                continue
+            if self.kind_filter.get() != ALL_KINDS and KIND_LABEL[e.kind] != self.kind_filter.get():
                 continue
             if q and q not in " ".join((e.name, e.display, e.scope, e.target, e.key_path)).lower():
                 continue
@@ -152,7 +164,9 @@ class App(ttk.Frame):
             text = f"{e.full_key}\n呼び先: {e.target or '（なし）'}"
             if e.detail:
                 text += f"\n{e.detail}"
-            if e.kind == "handler" and e.guid:
+            if e.note:
+                text += f"\n{e.note}"
+            if e.kind in ("handler", "msix") and e.guid:
                 text += f"\nCLSID: {e.guid}（無効化はこの CLSID を使う全ての場所に効きます）"
             if e.system:
                 text += "\n※ Windows 標準の場所を指しています。削除は推奨しません。"
@@ -196,6 +210,12 @@ class App(ttk.Frame):
         if not sel:
             self.status.set("削除する項目を選んでください")
             return
+        packaged = [e for e in sel if e.kind == "msix"]
+        if packaged:  # パッケージアプリの項目は削除できない（無効化は可能）
+            sel = [e for e in sel if e.kind != "msix"]
+            self.status.set(f"新メニュー(MSIX)の {len(packaged)} 件は削除できません（「無効にする」を使ってください）")
+            if not sel:
+                return
         names = "\n".join(f"  ・{e.display}（{e.scope} / {e.hive_name}）" for e in sel[:8])
         more = f"\n  …ほか {len(sel) - 8} 件" if len(sel) > 8 else ""
         warn = ""
@@ -273,7 +293,7 @@ def main() -> None:
     except Exception:
         pass
     root = tk.Tk()
-    root.title("ShellMenuKeeper — 右クリックメニューの保守")
+    root.title(f"ShellMenuKeeper {__version__} — 右クリックメニューの保守")
     root.geometry("1180x640")
     App(root)
     root.mainloop()

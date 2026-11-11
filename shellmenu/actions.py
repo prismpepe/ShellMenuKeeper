@@ -137,6 +137,9 @@ def _delete_tree(hive: int, path: str) -> None:
 
 
 def delete(env: Env, entry: Entry) -> Path:
+    if entry.kind == "msix":
+        # パッケージの持ち物なので、レジストリからは消せない（消しても更新で復活する）
+        raise ActionError("パッケージアプリの項目は削除できません。「無効にする」を使うか、アプリをアンインストールしてください")
     _ensure_exists(entry)
     saved = backup(env, entry)
     try:
@@ -198,6 +201,8 @@ def relaunch_as_admin() -> bool:
     import sys
 
     exe = sys.executable
+    if getattr(sys, "frozen", False):  # exe 版は自分自身をそのまま起動し直す
+        return ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, None, None, 1) > 32
     pyw = exe[:-10] + "pythonw.exe" if exe.lower().endswith("python.exe") else exe
     if not os.path.exists(pyw):
         pyw = exe

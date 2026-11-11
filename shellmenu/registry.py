@@ -19,6 +19,12 @@ HIVE_BY_NAME = {"HKCU": winreg.HKEY_CURRENT_USER, "HKLM": winreg.HKEY_LOCAL_MACH
 # 拡張ハンドラを無効にするための一覧。HKCU 側ならば管理者権限なしで書ける。
 BLOCKED_PATH = r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Blocked"
 
+# インストール済みパッケージの一覧。ここに無いパッケージの登録は、メニューには出ない残骸
+REPOSITORY_PATH = (
+    r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion"
+    r"\AppModel\Repository\Packages"
+)
+
 
 @dataclass(frozen=True)
 class Root:
@@ -34,6 +40,8 @@ class Env:
     roots: list[Root]        # Classes の置き場（HKCU と HKLM）
     blocked: list[Root]      # Shell Extensions\Blocked の置き場。先頭が書き込み先
     backup_dir: Path = field(default_factory=lambda: default_backup_dir())
+    # インストール済み MSIX パッケージの一覧（PackageRootFolder を持つ）。None なら MSIX は調べない
+    repo: Root | None = None
 
     @property
     def blocked_write(self) -> Root:
@@ -55,6 +63,7 @@ def default_env() -> Env:
             Root("HKCU", winreg.HKEY_CURRENT_USER, BLOCKED_PATH),
             Root("HKLM", winreg.HKEY_LOCAL_MACHINE, BLOCKED_PATH),
         ],
+        repo=Root("HKCU", winreg.HKEY_CURRENT_USER, REPOSITORY_PATH),
     )
 
 
