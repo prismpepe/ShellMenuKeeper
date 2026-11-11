@@ -61,7 +61,13 @@ Windows 11 のエクスプローラで右クリックしたときのメニュー
 
 ## 起動
 
-exe 版（Python 不要）: [Releases](../../releases) から `ShellMenuKeeper.exe` をダウンロードして実行する。
+exe 版（Python 不要）: [Releases](../../releases) から `ShellMenuKeeper-<バージョン>.zip` を
+ダウンロードし、展開して `ShellMenuKeeper.exe` を実行する。
+
+署名のない exe は、ブラウザや Windows が単体でのダウンロードを止めることがあるため、
+README・LICENSE と一緒に zip で配布している。展開した exe に警告が出て起動できないときは、
+**展開する前の zip** を右クリック →「プロパティ」→「全般」の「セキュリティ」で
+「許可する」にチェック →「OK」としてから、展開し直す。
 
 Python 版:
 
