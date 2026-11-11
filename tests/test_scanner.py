@@ -33,6 +33,16 @@ def test_unquoted_path_with_spaces_is_not_cut_at_a_folder(tmp_path):
     assert not path_exists(extract_executable(str(dll)))
 
 
+def test_missing_unquoted_path_with_spaces_is_shown_whole():
+    # リンク切れでも、画面に出す呼び先は "C:\Program" ではなく DLL までの全体にする
+    assert extract_executable(r"C:\Program Files\SampleShell\ext64.dll") == r"C:\Program Files\SampleShell\ext64.dll"
+    assert (
+        extract_executable(r"C:\Program Files\Old App\old.exe /add %1")
+        == r"C:\Program Files\Old App\old.exe"
+    )
+    assert extract_executable(r"C:\gone\noext") == r"C:\gone\noext"
+
+
 def test_path_exists_bare_and_absolute():
     assert path_exists("notepad.exe")
     assert path_exists(sys.executable)

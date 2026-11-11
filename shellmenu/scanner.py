@@ -131,7 +131,10 @@ def extract_executable(cmd: str) -> str:
         cand = " ".join(parts[:i])
         if path_exists(cand) or path_exists(cand + ".exe"):
             return cand
-    return parts[0]
+    # どれも実在しない（リンク切れ）。表示のために、実行ファイルの拡張子までを呼び先とみなす。
+    # これが無いと "C:\Program Files\X\x.dll" が "C:\Program" と表示され、何が無いのか分からない
+    m = re.match(r"^(.+?\.(?:exe|dll|ocx|com|bat|cmd|scr|cpl|msc))(?=\s|$)", cmd, re.IGNORECASE)
+    return m.group(1) if m else parts[0]
 
 
 def is_system_path(p: str) -> bool:
